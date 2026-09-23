@@ -166,29 +166,39 @@ def _node_text(copy_pack: dict, keys: tuple[str, ...]) -> str:
     return "\n".join(text for _p, text in _iter_strings(node))
 
 
+# 参与合规扫描的顶层节点（顺序即报告顺序）。
+# PRO-13 起新增 naming_candidates（闭合 PRO-12 §5 D-1：命名候选 slogan 从不进入扫描）
+# 与 ui（闭合 D-4：落地页/内联脚本的硬编码用户可见文案统一受检）。
+# 说明性节点（rules / source / title / scan_scope / version）不扫描：它们会引用
+# 白名单数字与禁用项编号，属文档而非投放文案（见 copy_pack.json 的 scan_scope）。
+SCAN_ROOTS: tuple[str, ...] = ("assets", "naming_candidates", "ui")
+
+
 def validate_copy_pack(copy_pack: dict, lexicon: dict, phase: str) -> list[dict]:
-    """全量校验文案包：递归遍历所有字符串值查违规 + 校验 required_tokens。
+    """全量校验文案包：递归遍历所有对外节点的字符串值查违规 + 校验 required_tokens。
 
     违规项在 find_violations 的基础上多一个 json_path 字段；
     required_tokens 缺失记为 severity="required_missing"。
     """
     violations: list[dict] = []
 
-    # 只校验对外物料（assets.*）：顶层 rules/source/title 等属说明性文档，
-    # 会引用白名单数字（是「两臂定义」本身），不属投放文案。
-    if isinstance(copy_pack, dict) and isinstance(copy_pack.get("assets"), dict):
-        walk_root: Any = copy_pack["assets"]
-        prefix = "assets"
-    else:
-        walk_root = copy_pack
-        prefix = ""
+    roots: list[tuple[str, Any]] = []
+    if isinstance(copy_pack, dict):
+        for key in SCAN_ROOTS:
+            node = copy_pack.get(key)
+            if isinstance(node, (dict, list)):
+                roots.append((key, node))
+    if not roots:
+        # 兜底：结构不符合契约时整体扫描，宁可多报不可漏报
+        roots = [("", copy_pack)]
 
-    for rel_path, value in _iter_strings(walk_root, phase=phase):
-        full_path = f"{prefix}.{rel_path}" if prefix else rel_path
-        for item in find_violations(value, lexicon, phase):
-            enriched = dict(item)
-            enriched["json_path"] = full_path
-            violations.append(enriched)
+    for prefix, walk_root in roots:
+        for rel_path, value in _iter_strings(walk_root, phase=phase):
+            full_path = f"{prefix}.{rel_path}" if prefix else rel_path
+            for item in find_violations(value, lexicon, phase):
+                enriched = dict(item)
+                enriched["json_path"] = full_path
+                violations.append(enriched)
 
     for rule in lexicon.get("required_tokens", []):
         scope = rule.get("scope")

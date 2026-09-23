@@ -1,0 +1,24 @@
+{
+  "purpose": "T0 前置证据（装置配置，非投放文案）。--phase t0 启动时必须通过 --t0-evidence 指向本结构的真实副本；缺字段或字段为 false 即拒绝启动（exit 3）。",
+  "how_to_use": [
+    "1. 复制本模板到工作区外的留痕位置（不要用模板本身当证据）。",
+    "2. 把 8 项前置逐条填成带证据链接的条目，并确认 PRO-7 已交付。",
+    "3. 启动：python3 marketing/landing/app.py --phase t0 --t0-evidence <你的证据文件>",
+    "4. 证据文件与启动记录一并留档；T0 前不得执行本步骤（PRO-4 §4.3 伦理红线）。"
+  ],
+  "pro7_delivered": false,
+  "preconditions_all_green": false,
+  "evidence_date": "",
+  "preconditions": [
+    {"id": "#1", "name": "见 docs/05-gtm-plan.md §0.3 #1", "status": "pending", "evidence": ""},
+    {"id": "#2", "name": "曝光埋点（exposure）", "status": "pending", "evidence": ""},
+    {"id": "#3", "name": "注册来源埋点", "status": "pending", "evidence": ""},
+    {"id": "#4", "name": "首刷兴趣 ground truth", "status": "pending", "evidence": ""},
+    {"id": "#5", "name": "来源参数 + 归因落库", "status": "pending", "evidence": ""},
+    {"id": "#6", "name": "feed 组成日志", "status": "pending", "evidence": ""},
+    {"id": "#7", "name": "假门落地页 + 分流统计（本团队已交付）", "status": "ready", "evidence": "docs/08-gtm-channel-execution-pack.md"},
+    {"id": "#8", "name": "见 docs/05-gtm-plan.md §0.3 #8", "status": "pending", "evidence": ""}
+  ],
+  "approved_by": "",
+  "notes": "模板默认全 false：这是刻意的 fail-closed 默认值，防止有人直接拿模板当证据启动 t0 相位。"
+}

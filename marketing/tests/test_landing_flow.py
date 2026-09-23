@@ -274,6 +274,104 @@ class LandingFlowTest(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 proc.kill()
 
+    # -- ⑨ PRO-13：t0 相位的 T0 前置证据门禁（闭合 PRO-12 §5 D-3）---------
+    def _t0_evidence(self, *, pro7=True, preconditions=True, count=8, date="2026-09-24"):
+        return {
+            "pro7_delivered": pro7,
+            "preconditions_all_green": preconditions,
+            "evidence_date": date,
+            "preconditions": [{"id": "#%d" % (i + 1), "status": "green"} for i in range(count)],
+        }
+
+    def _run_t0_start(self, extra_args):
+        return subprocess.run(
+            [sys.executable, APP_PATH, "--port", "0",
+             "--db", os.path.join(self.tmp.name, "t0.sqlite3"), "--phase", "t0"] + extra_args,
+            env=dict(os.environ), capture_output=True, timeout=30,
+        )
+
+    def test_t0_phase_requires_evidence_file(self):
+        proc = self._run_t0_start([])
+        self.assertEqual(proc.returncode, 3, proc.stdout.decode("utf-8", "ignore"))
+        self.assertIn("T0 前置证据", proc.stdout.decode("utf-8", "ignore"))
+
+    def test_t0_phase_rejects_incomplete_evidence(self):
+        path = os.path.join(self.tmp.name, "t0_bad.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self._t0_evidence(pro7=False, count=3), fh, ensure_ascii=False)
+        proc = self._run_t0_start(["--t0-evidence", path])
+        self.assertEqual(proc.returncode, 3)
+        out = proc.stdout.decode("utf-8", "ignore")
+        self.assertIn("pro7_delivered", out)
+        self.assertIn("preconditions", out)
+
+    def test_t0_phase_starts_with_valid_evidence(self):
+        path = os.path.join(self.tmp.name, "t0_ok.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self._t0_evidence(), fh, ensure_ascii=False)
+        proc = subprocess.Popen(
+            [sys.executable, APP_PATH, "--port", "0",
+             "--db", os.path.join(self.tmp.name, "t0_ok.sqlite3"),
+             "--phase", "t0", "--t0-evidence", path],
+            env=dict(os.environ), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            time.sleep(1.5)
+            self.assertIsNone(proc.poll(), "有效证据下 t0 相位服务应保持运行")
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    # -- ⑩ PRO-13：命名候选渲染 + 界面文案来自文案包 ----------------------
+    def test_naming_candidate_renders_and_is_recorded(self):
+        status, html, _ = self.request("GET", "/?naming=A1")
+        self.assertEqual(status, 200)
+        self.assertIn("光见", html, "候选名必须真的渲染出来（PRO-12 §3.2 L-8）")
+        self.assertIn("规则写出来，你自己核对", html, "pre_t0 臂应展示机制类替代句")
+        self.assertNotIn("发出来，就被看见", html, "结果承诺型 Slogan 不得在 pre_t0 出现")
+        self.assertIn("候选=A1", html)
+
+        stats = self._stats()
+        self.assertEqual(stats["naming"]["A1"]["page_view"], 1)
+
+        # 未登记的 id 一律忽略（不渲染、不入账）
+        status, html2, _ = self.request("GET", "/?naming=ZZ9")
+        self.assertEqual(status, 200)
+        self.assertNotIn("本页展示的品牌候选", html2)
+        stats2 = self._stats()
+        self.assertNotIn("ZZ9", stats2["naming"])
+
+    def test_ui_copy_comes_from_copy_pack(self):
+        with open(COPY_PACK_PATH, "r", encoding="utf-8") as fh:
+            pack = json.load(fh)
+        pack = json.loads(json.dumps(pack))
+        pack["ui"]["share"]["player_note"] = "SENTINEL-PLAYER"
+        pack["ui"]["share"]["gate_text"] = "SENTINEL-GATE"
+        pack["ui"]["recruit"]["result_ok"] = "SENTINEL-OK"
+        node = pack["assets"]["share"]["variants"]["V1"]["pre_t0"]
+        html = landing_app.render_share(node, "V1", "pre_t0", "vid1", pack["ui"]["share"])
+        self.assertIn("SENTINEL-PLAYER", html)
+        self.assertIn("SENTINEL-GATE", html)
+        self.assertNotIn("直连可播放 · 无需注册 · 点击播放", html)
+        recruit_html = landing_app.render_recruit(
+            pack["assets"]["recruit"]["variants"]["V1"]["pre_t0"],
+            pack["assets"]["recruit"]["form"], "V1", "pre_t0", pack["ui"]["recruit"],
+        )
+        self.assertIn("SENTINEL-OK", recruit_html)
+
+    def test_ui_keys_gate(self):
+        with open(COPY_PACK_PATH, "r", encoding="utf-8") as fh:
+            pack = json.load(fh)
+        self.assertEqual(landing_app.check_required_ui_keys(pack), [])
+        self.assertTrue(landing_app.check_required_ui_keys({}))
+        broken = json.loads(json.dumps(pack))
+        broken["ui"]["share"].pop("gate_text")
+        problems = landing_app.check_required_ui_keys(broken)
+        self.assertTrue(any("ui.share.gate_text" in p for p in problems), problems)
+
 
 if __name__ == "__main__":
     unittest.main()

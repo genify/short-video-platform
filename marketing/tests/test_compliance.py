@@ -121,5 +121,126 @@ class ComplianceUnitTest(unittest.TestCase):
         self.assertEqual(compliance.blocking_violations(t0), [])
 
 
+class Pro13HardeningTest(unittest.TestCase):
+    """PRO-13 返修后的装置加固测试（对应 PRO-12 人工终审 §5 的四处盲区）。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.lexicon = compliance.load_lexicon(LEXICON_PATH)
+        with open(COPY_PACK_PATH, "r", encoding="utf-8") as fh:
+            cls.pack = json.load(fh)
+
+    def _ids(self, violations):
+        return sorted(v["id"] for v in violations)
+
+    # -- D-1：naming_candidates 必须进入扫描 -------------------------------
+    def test_naming_candidates_are_scanned(self):
+        bad = json.loads(json.dumps(self.pack))
+        bad["naming_candidates"]["directions"]["A"]["candidates"][0]["pre_t0"]["slogan"] = "发出来，就被看见"
+        violations = compliance.validate_copy_pack(bad, self.lexicon, "pre_t0")
+        hits = [v for v in violations if "naming_candidates" in v.get("json_path", "")]
+        self.assertTrue(hits, "naming_candidates 必须进入合规扫描（PRO-12 §5 D-1）")
+        self.assertIn("TG-06", self._ids(hits))
+        self.assertEqual(
+            hits[0]["json_path"],
+            "naming_candidates.directions.A.candidates[0].pre_t0.slogan",
+        )
+
+    def test_naming_t0_arm_deferred_out_of_pre_t0_scan(self):
+        # 真实包：pre_t0 相位不得报出任何 naming_candidates 违规（结果承诺句都在 t0 臂）
+        pre = compliance.validate_copy_pack(self.pack, self.lexicon, "pre_t0")
+        self.assertEqual([v for v in pre if "naming_candidates" in v.get("json_path", "")], [])
+        # 把 t0 臂的句子挪到 pre_t0 臂 → 必须报违规（证明这门禁真的有效，不是空跑）
+        moved = json.loads(json.dumps(self.pack))
+        cand = moved["naming_candidates"]["directions"]["A"]["candidates"][0]
+        cand["pre_t0"]["slogan"] = cand["t0"]["slogan"]
+        hits = [
+            v for v in compliance.validate_copy_pack(moved, self.lexicon, "pre_t0")
+            if "naming_candidates" in v.get("json_path", "")
+        ]
+        self.assertIn("TG-06", self._ids(hits))
+
+    # -- D-4：界面文案（ui.*）必须进入扫描 ---------------------------------
+    def test_ui_node_is_scanned(self):
+        bad = json.loads(json.dumps(self.pack))
+        bad["ui"]["share"]["gate_text"] = "注册就能保证有人看"
+        violations = compliance.validate_copy_pack(bad, self.lexicon, "pre_t0")
+        hits = [v for v in violations if v.get("json_path", "").startswith("ui.")]
+        self.assertTrue(hits, "ui.* 必须进入合规扫描（PRO-12 §5 D-4）")
+        self.assertIn("TG-06", self._ids(hits))
+
+    def test_real_pack_clean_in_both_phases(self):
+        for phase in ("pre_t0", "t0"):
+            violations = compliance.validate_copy_pack(self.pack, self.lexicon, phase)
+            self.assertEqual(
+                compliance.blocking_violations(violations), [],
+                "真实文案包在 %s 相位不应有阻断级违规" % phase,
+            )
+
+    # -- 新增词条的语义覆盖（PRO-12 §3.1 L-1～L-4 / §4.2）-------------------
+    def test_semantic_blind_spots_now_covered(self):
+        cases = [
+            ("这点比我用过的平台都清楚", "HB-16"),          # L-2 竞品对照
+            ("一个入口完成多平台分发", "HB-17"),            # L-4 未上线能力
+            ("我能看到它被推给谁、为什么", "HB-17"),         # L-3 受众可见性超出实现
+            ("把首发的曝光下限写成产品约束", "HB-18"),       # §4.2 「下限 = 保底」
+            ("发出来，就被看见", "TG-06"),                  # L-1 命名候选无数字结果承诺
+            ("每个字都有人看", "TG-06"),
+            ("第一条就有人看见", "TG-06"),
+        ]
+        for text, rule_id in cases:
+            found = self._ids(compliance.find_violations(text, self.lexicon, "pre_t0"))
+            self.assertIn(rule_id, found, "%r 应命中 %s（实际：%s）" % (text, rule_id, found))
+        # 反证：机制类替代句不得被误伤
+        for ok in ("规则写出来，你自己核对", "每条理由都写出来", "首发走独立路由", "先育苗，再谈赛道"):
+            self.assertEqual(
+                compliance.find_violations(ok, self.lexicon, "pre_t0"), [], "%r 不应报违规" % ok
+            )
+
+    # -- D-2：必含项 scope 必须真的被执行 ----------------------------------
+    def test_share_landing_required_scope_is_enforced(self):
+        import importlib.util
+        import tempfile
+        from pathlib import Path
+
+        lint_path = os.path.join(ROOT, "marketing", "scripts", "compliance_lint.py")
+        spec_obj = importlib.util.spec_from_file_location("pd_compliance_lint", lint_path)
+        lint = importlib.util.module_from_spec(spec_obj)
+        sys.modules["pd_compliance_lint"] = lint
+        spec_obj.loader.exec_module(lint)
+
+        manifest = json.loads(Path(lint.MANIFEST_PATH).read_text(encoding="utf-8"))
+        self.assertIn(
+            "share_landing", manifest["required_token_scopes"],
+            "share_landing 必须登记为必含项 scope（PRO-12 §5 D-2）",
+        )
+        # 真实物料：必含项 0 缺失
+        self.assertEqual(lint.check_required_tokens(manifest, self.lexicon), [])
+
+        # 反证：把 share 节点换成不含「直连可播放/不用注册」的最小节点 → RT-04 必须报缺失
+        tmp = tempfile.mkdtemp()
+        with open(COPY_PACK_PATH, "r", encoding="utf-8") as fh:
+            stripped = json.load(fh)
+        stripped["assets"]["share"] = {
+            "variants": {
+                v: {"pre_t0": {"h1": "看视频", "bullets": ["点开即播"]},
+                    "t0": {"h1": "看视频", "bullets": ["点开即播"]}}
+                for v in ("V1", "V2", "V3")
+            }
+        }
+        target = Path(tmp) / "marketing" / "landing"
+        target.mkdir(parents=True)
+        (target / "copy_pack.json").write_text(
+            json.dumps(stripped, ensure_ascii=False), encoding="utf-8"
+        )
+        original_root = lint.ROOT
+        try:
+            lint.ROOT = Path(tmp)
+            missing = lint.check_required_tokens(manifest, self.lexicon)
+        finally:
+            lint.ROOT = original_root
+        self.assertIn("RT-04", [v["id"] for v in missing])
+
+
 if __name__ == "__main__":
     unittest.main()

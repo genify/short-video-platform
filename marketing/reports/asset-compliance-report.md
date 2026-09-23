@@ -1,7 +1,7 @@
 # 投放素材合规审查报告（PRO-10）
 
-> 由 `marketing/scripts/compliance_lint.py` 生成。词表：`marketing/compliance/lexicon.json`（hard_ban 15 条 + t0_gated 6 条）；清单：`marketing/compliance/scan_manifest.json`。
-> 生成时间（UTC）：2026-09-23T16:49:04+00:00
+> 由 `marketing/scripts/compliance_lint.py` 生成。词表：`marketing/compliance/lexicon.json`（hard_ban 18 条 + t0_gated 6 条）；清单：`marketing/compliance/scan_manifest.json`。
+> 生成时间（UTC）：2026-09-23T17:03:57+00:00
 
 ## 结论
 
@@ -23,13 +23,14 @@
 | T-01 | `marketing/landing/copy_pack.json` | strict | ✅ 通过 | 0 |
 | T-02 | `marketing/data/community_scripts.md` | strict | ✅ 通过 | 3 |
 | | ↳ 原始命中明细 | | | HB-08:站内关系链、HB-12:收入承诺、HB-15:买量 |
-| T-03 | `marketing/data/share_scripts.md` | strict | ✅ 通过 | 0 |
+| T-03 | `marketing/data/share_scripts.md` | strict | ✅ 通过 | 1 |
+| | ↳ 原始命中明细 | | | HB-16:比别的平台 |
 | T-04 | `marketing/data/creator_outreach.md` | strict | ✅ 通过 | 2 |
 | | ↳ 原始命中明细 | | | HB-15:买量、TG-06:承诺（如曝光 |
 | T-05 | `marketing/data/naming_test_brief.md` | strict | ✅ 通过 | 2 |
 | | ↳ 原始命中明细 | | | HB-08:站内关系链、HB-15:买量 |
-| T-06 | `docs/08-gtm-channel-execution-pack.md` | quoted | ✅ 通过 | 5 |
-| | ↳ 原始命中明细 | | | HB-01:保底曝光、HB-08:站内关系链、HB-09:算法更准、HB-14:对手不透明、HB-15:买量 |
+| T-06 | `docs/08-gtm-channel-execution-pack.md` | quoted | ✅ 通过 | 8 |
+| | ↳ 原始命中明细 | | | HB-01:保底曝光、HB-08:站内关系链、HB-09:算法更准、HB-14:对手不透明、HB-15:买量、HB-16:比别的平台、HB-17:被推给谁、HB-18:曝光下限 |
 | T-07 | `marketing/out/links.csv` | strict | ✅ 通过 | 0 |
 | T-08 | `marketing/out/qr/` | strict_text_only | ✅ 通过 | 0 |
 | T-09 | `marketing/data/creator_promise_card.md` | strict | ✅ 通过 | 1 |

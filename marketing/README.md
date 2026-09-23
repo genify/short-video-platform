@@ -12,17 +12,21 @@
 
 ```
 marketing/
-  compliance/     lexicon.json（合规词表）· scan_manifest.json（扫描清单）
-  landing/        app.py（假门/分享落地页服务）· compliance.py（词表校验器）· copy_pack.json（文案包，两臂）
+  compliance/     lexicon.json（合规词表，18 hard_ban + 6 t0_gated + 4 必含项）
+                  scan_manifest.json（扫描清单：9 目标 + 3 必含项 scope + device_files 排除登记）
+  landing/        app.py（假门/分享落地页服务，含三道启动硬门）· compliance.py（词表校验器）
+                  copy_pack.json（文案包：assets 两臂 + naming_candidates 按臂 + ui 界面文案）
   scripts/        make_creator_links.py · qr.py · compliance_lint.py · power_analysis.py · simulate_traffic.py
   data/           seed_creators.csv（创作者台账）· share_scripts.md · creator_outreach.md
                   creator_promise_card.md（T0 起才可发）· community_scripts.md · naming_test_brief.md
-  tests/          30 项单测（合规 / 落地页链路 / 链接生成 / QR 参考比对）
+                  t0_evidence.template.json（--phase t0 必填的 T0 证据模板）
+  tests/          42 项单测（合规 / 落地页链路 / 链接生成 / QR 参考比对 / PRO-13 装置加固）
   reports/        asset-compliance-report.md · pro10-power-and-mde.md · selftest-synthetic-receipt.md
+                  asset-review-editor.md（PRO-12 人工终审，由 Editor 维护）
   out/            links.csv + links/*.txt + qr/*.svg|png（生成物）
 ```
 
-## 2. 四条最常用命令
+## 2. 五条最常用命令
 
 ```bash
 # ① 生成种子创作者专属链接与二维码（幂等）
@@ -37,10 +41,13 @@ python3 marketing/scripts/compliance_lint.py
 # ③ 样本量与 MDE 回执（判据能不能判定，先算再测）
 python3 marketing/scripts/power_analysis.py
 
-# ④ 起落地页服务并跑装置自检
+# ④ 起落地页服务并跑装置自检（pre_t0 相位）
 python3 marketing/landing/app.py --port 8088 --db marketing/out/landing.sqlite3 --phase pre_t0
 python3 marketing/scripts/simulate_traffic.py --base http://127.0.0.1:8088 --visitors 480 \
   --rates "V1:0.11,V2:0.08,V3:0.07" --seed 42
+
+# ⑤ t0 相位：必须附 T0 证据（缺证据即 exit 3）
+python3 marketing/landing/app.py --phase t0 --t0-evidence <T0 证据 JSON>
 ```
 
 全部测试：`python3 -m unittest discover -s marketing/tests -t .`
@@ -49,17 +56,25 @@ python3 marketing/scripts/simulate_traffic.py --base http://127.0.0.1:8088 --vis
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/` | 招募假门落地页（哈希等分 + 粘性 cookie） |
+| GET | `/` | 招募假门落地页（哈希等分 + 粘性 cookie）；带 `?naming=A1` 时渲染命名候选 |
 | GET | `/v/1|2|3` | 强制变体的招募页（定向投放对照，事件记 `forced=1`） |
 | GET | `/s/<video_id>` | 分享落地页（直连可播放、不强制注册、看满 3 条后引导注册） |
-| POST | `/api/events` | 事件：`page_view` / `cta_click` / `form_submit` / `view3` / `register_click` |
-| POST | `/api/lead` | 留资（必须带 consent；重复提交不新增行） |
+| POST | `/api/events` | 事件：`page_view` / `cta_click` / `form_submit` / `view3` / `register_click`（可带 `naming`） |
+| POST | `/api/lead` | 留资（必须带 consent；重复提交不新增行；可带 `naming`） |
 | POST | `/api/withdraw` | 撤回（contact 置空，统计不变） |
 | GET | `/api/stats` | 分变体统计 + `v1_minus_max_v2_v3_pp` + 样本门（300/500）+ 命名分流 |
 | GET | `/api/health` | 健康检查 |
 
-**启动门禁**：`--phase` 决定文案臂；若当前臂含禁用表述（`pre_t0` 相位下含量化承诺），服务**拒绝启动**（exit code 2）。
-因此「T0 前误投量化承诺」在装置层不可能发生。
+**三道启动门禁**（任一不过即拒绝启动）：
+
+| # | 门禁 | 失败退出码 |
+|---|---|---|
+| ① | 相位文案（扫描范围 `assets.*` + `naming_candidates.*` + `ui.*`） | 2 |
+| ② | `--phase t0` 必须附有效 `--t0-evidence`（PRO-7 交付 + §0.3 八项全绿 + 采集日） | 3 |
+| ③ | 界面文案必需键完整性（`ui.*`，缺失即 fail-closed） | 4 |
+
+因此「T0 前误投量化承诺」与「T0 前误用 t0 臂文案」在装置层都不可能发生；
+页面与脚本里用户可见的每一句话都来自受扫描的文案包，不再是代码里的硬编码。
 
 ## 4. 隐私与数据
 

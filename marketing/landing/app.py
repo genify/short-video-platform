@@ -2,8 +2,16 @@
 
     python3 marketing/landing/app.py --port 8088 --db marketing/out/landing.sqlite3 --phase pre_t0
 
-启动硬门：用 compliance.validate_copy_pack 校验当前 phase 下的全部文案，
-命中 hard_ban / t0_gated 即拒绝启动（exit code 2，并打印违规清单）。
+启动硬门（三道，任一不过即拒绝启动）：
+  ① 合规门禁：用 compliance.validate_copy_pack 校验当前 phase 下的全部文案
+     （assets + naming_candidates + ui），命中 hard_ban / t0_gated 即拒绝启动
+     （exit code 2，并打印违规清单）。
+  ② T0 前置校验：`--phase t0` 必须同时给 `--t0-evidence <T0 证据 JSON>`，
+     且证据里 PRO-7 交付与 §0.3 八项前置全绿均为 true，否则拒绝启动（exit code 3）。
+     这是为了堵住「T0 前误传 --phase t0 即投出三个数字」的装置层路径
+     （PRO-12 人工终审 §2.6-B / §5 D-3）。
+  ③ 界面文案完整性：copy_pack.json 的 ui.* 必须包含全部必需键，缺失即拒绝启动
+     （exit code 4，fail-closed，避免页面出现占位符）。
 
 路由表
     GET  /                招募假门落地页（cookie 分流 + 粘性，写 page_view）
@@ -58,6 +66,18 @@ ARM_SEED = "PRO-1-landing-v1"
 CONSENT_TEXT_VERSION = "v1"
 RETENTION_DAYS = 90
 ALLOWED_EVENTS = ("page_view", "cta_click", "view3", "register_click")
+
+# 界面文案必需键（copy_pack.json 的 ui.*）。缺失即拒绝启动（exit 4）。
+REQUIRED_UI_KEYS: dict[str, tuple[str, ...]] = {
+    "recruit": (
+        "result_ok", "result_duplicate", "result_error_prefix",
+        "result_error_unknown", "result_network_error", "naming_label",
+    ),
+    "share": (
+        "player_note", "viewed_prefix", "viewed_suffix",
+        "gate_text", "register_button", "register_done",
+    ),
+}
 UTM_KEYS = ("utm_source", "utm_medium", "utm_campaign", "utm_content")
 
 SCHEMA = """
@@ -476,6 +496,53 @@ class Application:
     def recruit_form(self) -> dict:
         return self.copy_pack["assets"]["recruit"].get("form", {})
 
+    def ui(self, asset: str) -> dict:
+        """用户可见的界面文案（PRO-13 起从本文件的硬编码字符串抽到 copy_pack.json 的 ui.*）。
+
+        这样「页面/脚本里用户能看到的每一句话」都与 assets/naming 一起受
+        compliance.validate_copy_pack 扫描（闭合 PRO-12 §5 D-4）。
+        """
+        node = self.copy_pack.get("ui", {})
+        return node.get(asset, {}) if isinstance(node, dict) else {}
+
+    # -- 命名候选（第二批分流维度）--------------------------------------
+    def naming_ids(self) -> tuple[str, ...]:
+        """copy_pack.json 里已登记的命名候选 id（形如 A1/B2/C3）。"""
+        node = self.copy_pack.get("naming_candidates", {})
+        directions = node.get("directions", {}) if isinstance(node, dict) else {}
+        ids: list[str] = []
+        if isinstance(directions, dict):
+            for direction in directions.values():
+                for cand in (direction or {}).get("candidates", []) or []:
+                    cid = cand.get("id")
+                    if isinstance(cid, str) and cid:
+                        ids.append(cid)
+        return tuple(ids)
+
+    def naming_candidate(self, naming_id: str | None) -> dict | None:
+        """按 id 取候选：返回 {id, name, slogan}（slogan 取当前相位那一臂）；未登记则 None。
+
+        PRO-13：原装置只在事件表里记 `naming` 字段，**页面从不渲染候选**，
+        因此第二批的 cta_click 差异无法归因（PRO-12 §3.2 L-8）。本方法供渲染用。
+        """
+        if not naming_id or not isinstance(naming_id, str):
+            return None
+        node = self.copy_pack.get("naming_candidates", {})
+        directions = node.get("directions", {}) if isinstance(node, dict) else {}
+        if not isinstance(directions, dict):
+            return None
+        for direction in directions.values():
+            for cand in (direction or {}).get("candidates", []) or []:
+                if cand.get("id") == naming_id:
+                    arm = cand.get(self.phase)
+                    arm = arm if isinstance(arm, dict) else {}
+                    return {
+                        "id": cand.get("id", ""),
+                        "name": cand.get("name", ""),
+                        "slogan": arm.get("slogan"),
+                    }
+        return None
+
 
 # ---------------------------------------------------------------------------
 # HTML 渲染
@@ -508,11 +575,15 @@ _CSS = (
     ".gate{margin-top:12px;padding:14px;border:1px solid #3c4043;border-radius:12px;background:#161a1f}"
     ".gate button{margin-top:10px;padding:10px 16px;border:0;border-radius:8px;background:#8ab4f8;"
     "color:#0f1115;font-weight:700;cursor:pointer}"
+    ".naming{border:1px dashed #3c4043;border-radius:12px;padding:12px 14px;margin:0 0 18px}"
+    ".naming h2{font-size:20px;margin:6px 0 4px}"
+    ".naming-slogan{color:#bdc1c6;margin:0;font-size:14px}"
 )
 
 _RECRUIT_JS = """
 (function(){
   var VARIANT = "__VARIANT__";
+  var NAMING = "__NAMING__";
   function post(payload){
     try {
       return fetch('/api/events', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -521,7 +592,7 @@ _RECRUIT_JS = """
   }
   var btn = document.getElementById('submit-btn');
   if(btn){ btn.addEventListener('click', function(){
-    post({event:'cta_click', asset:'recruit', variant:VARIANT});
+    post({event:'cta_click', asset:'recruit', variant:VARIANT, naming:NAMING || undefined});
   }); }
   var form = document.getElementById('lead-form');
   if(form){ form.addEventListener('submit', function(ev){
@@ -530,18 +601,18 @@ _RECRUIT_JS = """
     var consent = document.getElementById('consent').checked;
     var box = document.getElementById('result');
     fetch('/api/lead', {method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({contact:contact, consent:consent, variant:VARIANT})})
+      body:JSON.stringify({contact:contact, consent:consent, variant:VARIANT, naming:NAMING || undefined})})
       .then(function(r){ return r.json(); })
       .then(function(j){
         if(j && j.ok){
           box.style.color = '#81c995';
-          box.textContent = j.duplicated ? '已收到（重复提交已合并）' : '已提交，我们会人工联系你';
+          box.textContent = j.duplicated ? "__UI_RESULT_DUPLICATE__" : "__UI_RESULT_OK__";
         } else {
           box.style.color = '#f28b82';
-          box.textContent = '提交失败：' + ((j && j.error) || '未知错误');
+          box.textContent = "__UI_RESULT_ERROR_PREFIX__" + ((j && j.error) || "__UI_RESULT_ERROR_UNKNOWN__");
         }
       })
-      .catch(function(){ box.style.color='#f28b82'; box.textContent='网络错误，请稍后再试'; });
+      .catch(function(){ box.style.color='#f28b82'; box.textContent='__UI_RESULT_NETWORK_ERROR__'; });
   }); }
 })();
 """
@@ -558,7 +629,7 @@ _SHARE_JS = """
   var vc = document.getElementById('vc');
   var gate = document.getElementById('gate');
   function render(){
-    if(vc){ vc.textContent = '本会话已观看 ' + views + ' 条'; }
+    if(vc){ vc.textContent = '__UI_VIEWED_PREFIX__' + views + '__UI_VIEWED_SUFFIX__'; }
     if(gate && views >= 3){ gate.hidden = false; }
   }
   window.playOne = function(){
@@ -570,7 +641,7 @@ _SHARE_JS = """
   var reg = document.getElementById('reg-btn');
   if(reg){ reg.addEventListener('click', function(){
     post({event:'register_click', asset:'share', variant:VARIANT, video_id:VIDEO});
-    reg.textContent = '已收到（不强制注册，可继续观看）';
+    reg.textContent = '__UI_REGISTER_DONE__';
   }); }
   render();
 })();
@@ -594,12 +665,46 @@ def _page(title: str, body: str, js: str) -> str:
     )
 
 
-def render_recruit(node: dict, form: dict, variant: str, phase: str) -> str:
+def _ui_text(ui: dict, key: str) -> str:
+    """取出界面文案；缺失时返回空串（缺失由启动门禁 fail-closed 拦住，见 REQUIRED_UI_KEYS）。"""
+    value = ui.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _js_literal(text: str) -> str:
+    """把文案安全嵌进单/双引号 JS 字面量（转义引号与反斜杠）。"""
+    return json.dumps(text, ensure_ascii=False)[1:-1]
+
+
+def render_recruit(
+    node: dict, form: dict, variant: str, phase: str, ui: dict | None = None,
+    naming: dict | None = None,
+) -> str:
+    """招募假门页。
+
+    naming：{id, name, slogan}。只有请求带已登记的 `naming` 参数时才渲染候选
+    展示区——批次一（价值主张）不带该参数，因此不受影响；批次二（命名）靠这一段
+    让被测者真的看到候选名/Slogan，否则 cta_click 无法归因（PRO-12 §3.2 L-8）。
+    """
+    ui = ui or {}
     bullets = "".join(f"<li>{_esc(b)}</li>" for b in node.get("bullets", []))
     field = (form.get("fields") or [{}])[0]
     consent_text = form.get("consent_text", "")
+    naming_html = ""
+    naming_id = ""
+    if naming:
+        slogan = naming.get("slogan")
+        slogan_html = (
+            f"<p class=\"naming-slogan\">{_esc(slogan)}</p>" if isinstance(slogan, str) and slogan else ""
+        )
+        naming_html = (
+            f"<section class=\"naming\"><p class=\"eyebrow\">{_esc(_ui_text(ui, 'naming_label'))}</p>"
+            f"<h2>{_esc(naming.get('name', ''))}</h2>{slogan_html}</section>"
+        )
+        naming_id = naming.get("id", "")
     body = (
-        f"<p class=\"eyebrow\">{_esc(node.get('eyebrow', ''))}</p>"
+        naming_html
+        + f"<p class=\"eyebrow\">{_esc(node.get('eyebrow', ''))}</p>"
         f"<h1>{_esc(node.get('h1', ''))}</h1>"
         f"<p class=\"sub\">{_esc(node.get('sub', ''))}</p>"
         f"<ul>{bullets}</ul>"
@@ -612,28 +717,44 @@ def render_recruit(node: dict, form: dict, variant: str, phase: str) -> str:
         f"<p class=\"micro\">{_esc(node.get('cta_microcopy', ''))}</p>"
         "<p id=\"result\" class=\"result\"></p>"
         "</form>"
-        f"<footer>{_esc(node.get('footer_note', ''))}<br>页面版本={_esc(phase)} · 变体={_esc(variant)}</footer>"
+        f"<footer>{_esc(node.get('footer_note', ''))}<br>页面版本={_esc(phase)} · 变体={_esc(variant)}"
+        f"{' · 候选=' + _esc(naming_id) if naming_id else ''}</footer>"
     )
-    js = _RECRUIT_JS.replace("__VARIANT__", variant)
+    js = _RECRUIT_JS.replace("__VARIANT__", variant).replace("__NAMING__", _js_literal(naming_id))
+    for placeholder, key in (
+        ("__UI_RESULT_OK__", "result_ok"),
+        ("__UI_RESULT_DUPLICATE__", "result_duplicate"),
+        ("__UI_RESULT_ERROR_PREFIX__", "result_error_prefix"),
+        ("__UI_RESULT_ERROR_UNKNOWN__", "result_error_unknown"),
+        ("__UI_RESULT_NETWORK_ERROR__", "result_network_error"),
+    ):
+        js = js.replace(placeholder, _js_literal(_ui_text(ui, key)))
     return _page(node.get("h1", "内测名额申请"), body, js)
 
 
-def render_share(node: dict, variant: str, phase: str, video_id: str) -> str:
+def render_share(node: dict, variant: str, phase: str, video_id: str, ui: dict | None = None) -> str:
+    ui = ui or {}
     bullets = "".join(f"<li>{_esc(b)}</li>" for b in node.get("bullets", []))
     body = (
         f"<h1>{_esc(node.get('h1', ''))}</h1>"
         f"<p class=\"sub\">{_esc(node.get('sub', ''))}</p>"
         "<div class=\"player\" id=\"player\" onclick=\"playOne()\">"
         "<div class=\"playbtn\">▶</div>"
-        "<div>直连可播放 · 无需注册 · 点击播放</div></div>"
-        "<p class=\"vc\" id=\"vc\">本会话已观看 0 条</p>"
+        f"<div>{_esc(_ui_text(ui, 'player_note'))}</div></div>"
+        f"<p class=\"vc\" id=\"vc\">{_esc(_ui_text(ui, 'viewed_prefix'))}0{_esc(_ui_text(ui, 'viewed_suffix'))}</p>"
         f"<ul>{bullets}</ul>"
         "<div class=\"gate\" id=\"gate\" hidden>"
-        "看了 3 条了，要不要注册一个账号，把喜欢的留下来？"
-        "<div><button id=\"reg-btn\" type=\"button\">注册（可选，不注册也能继续看）</button></div></div>"
+        f"{_esc(_ui_text(ui, 'gate_text'))}"
+        f"<div><button id=\"reg-btn\" type=\"button\">{_esc(_ui_text(ui, 'register_button'))}</button></div></div>"
         f"<footer>视频={_esc(video_id)} · 页面版本={_esc(phase)} · 变体={_esc(variant)}</footer>"
     )
     js = _SHARE_JS.replace("__VARIANT__", variant).replace("__VIDEO__", json.dumps(video_id)[1:-1])
+    for placeholder, key in (
+        ("__UI_VIEWED_PREFIX__", "viewed_prefix"),
+        ("__UI_VIEWED_SUFFIX__", "viewed_suffix"),
+        ("__UI_REGISTER_DONE__", "register_done"),
+    ):
+        js = js.replace(placeholder, _js_literal(_ui_text(ui, key)))
     return _page(node.get("h1", "分享"), body, js)
 
 
@@ -787,9 +908,14 @@ class Handler(BaseHTTPRequestHandler):
         assigned = self.app.store.ensure_assignment(uid)
         variant = forced or assigned
         node = self.app.recruit_node(variant)
-        html = render_recruit(node, self.app.recruit_form(), variant, self.app.phase)
+        # 命名候选（第二批分流维度）：只接受 copy_pack 里已登记的 id，未登记视为未指定
+        naming = self.app.naming_candidate(self._flat_query().get("naming"))
+        html = render_recruit(
+            node, self.app.recruit_form(), variant, self.app.phase, self.app.ui("recruit"), naming
+        )
         self.app.store.record_event(
             event="page_view", asset="recruit", variant=variant, visitor_id=uid,
+            naming=(naming or {}).get("id") or None,
             utm=utm_from_query(self._query()), ip=self._client_ip(),
             forced=1 if forced else 0,
         )
@@ -802,7 +928,7 @@ class Handler(BaseHTTPRequestHandler):
         assigned = self.app.store.ensure_assignment(uid)
         variant = normalize_variant(self._flat_query().get("v")) or assigned
         node = self.app.share_node(variant)
-        html = render_share(node, variant, self.app.phase, video_id)
+        html = render_share(node, variant, self.app.phase, video_id, self.app.ui("share"))
         self.app.store.record_event(
             event="page_view", asset="share", variant=variant, visitor_id=uid,
             video_id=video_id, utm=utm_from_query(self._query()), ip=self._client_ip(),
@@ -909,9 +1035,65 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8088)
     parser.add_argument("--db", default=os.path.join(ROOT, "marketing", "out", "landing.sqlite3"))
     parser.add_argument("--phase", choices=("pre_t0", "t0"), default="pre_t0")
+    parser.add_argument(
+        "--t0-evidence",
+        default=os.environ.get("PD_T0_EVIDENCE") or None,
+        help="t0 相位必填：T0 证据 JSON 路径（PRO-7 交付 + §0.3 八项前置全绿）。"
+             "缺失或不合规则拒绝启动（exit 3）。模板：marketing/data/t0_evidence.template.json",
+    )
     parser.add_argument("--base-url", default="http://127.0.0.1:8088")
     parser.add_argument("--export-token", default=None)
     return parser
+
+
+def t0_evidence_gate(path: str | None) -> list[str]:
+    """`--phase t0` 的前置校验：必须有 T0 已到的机器可读证据。
+
+    返回问题清单（空 = 通过）。这是 PRO-12 §5 D-3 的装置层处置：
+    把「T0 是否已到」从操作人记忆变成启动参数 + 证据文件。
+    """
+    problems: list[str] = []
+    if not path:
+        return ["未提供 --t0-evidence（T0 证据文件）"]
+    if not os.path.isfile(path):
+        return ["T0 证据文件不存在：%s" % path]
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:  # noqa: BLE001
+        return ["T0 证据文件不是合法 JSON：%s" % exc]
+    if not isinstance(data, dict):
+        return ["T0 证据文件必须是 JSON 对象"]
+    for key in ("pro7_delivered", "preconditions_all_green"):
+        if data.get(key) is not True:
+            problems.append("证据字段 %s 必须为 true（当前：%r）" % (key, data.get(key)))
+    preconditions = data.get("preconditions")
+    if not isinstance(preconditions, list) or len(preconditions) < 8:
+        problems.append(
+            "证据字段 preconditions 必须列出 §0.3 的八项前置（当前：%s 项）"
+            % (len(preconditions) if isinstance(preconditions, list) else 0)
+        )
+    if not data.get("evidence_date"):
+        problems.append("证据字段 evidence_date 缺失（须写明证据采集日）")
+    return problems
+
+
+def check_required_ui_keys(copy_pack: dict) -> list[str]:
+    """界面文案完整性（fail-closed）：缺失键会让页面出现占位符，必须拦住启动。"""
+    problems: list[str] = []
+    ui = copy_pack.get("ui")
+    if not isinstance(ui, dict):
+        return ["copy_pack.json 缺少 ui 节点（界面文案必须统一受合规扫描）"]
+    for asset, keys in REQUIRED_UI_KEYS.items():
+        node = ui.get(asset)
+        if not isinstance(node, dict):
+            problems.append("ui.%s 节点缺失" % asset)
+            continue
+        for key in keys:
+            value = node.get(key)
+            if not isinstance(value, str) or not value.strip():
+                problems.append("ui.%s.%s 缺失或为空" % (asset, key))
+    return problems
 
 
 def serve(host: str, port: int, app: Application) -> ThreadingHTTPServer:
@@ -922,6 +1104,18 @@ def serve(host: str, port: int, app: Application) -> ThreadingHTTPServer:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
+
+    # 门禁 ②：t0 相位必须附 T0 证据（PRO-12 §5 D-3）
+    if args.phase == "t0":
+        t0_problems = t0_evidence_gate(args.t0_evidence)
+        if t0_problems:
+            print("[compliance] phase=t0 缺少有效的 T0 前置证据，拒绝启动（exit 3）：")
+            for problem in t0_problems:
+                print("  - %s" % problem)
+            print("  说明：T0 = MVP 可灰度日（PRO-7 交付 + §0.3 八项前置全绿）。")
+            print("  模板：marketing/data/t0_evidence.template.json")
+            return 3
+        print("[compliance] phase=t0 T0 前置证据校验通过：%s" % args.t0_evidence)
 
     findings = compliance_gate(args.phase)
     blocking = compliance.blocking_violations(findings)
@@ -942,6 +1136,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[compliance] 提示：{len(warnings)} 项 required_tokens 未在文案包中命中（不阻断）。")
 
     copy_pack = load_copy_pack(COPY_PACK_PATH)
+
+    # 门禁 ③：界面文案完整性（fail-closed）
+    ui_problems = check_required_ui_keys(copy_pack)
+    if ui_problems:
+        print("[compliance] 界面文案不完整，拒绝启动（exit 4）：")
+        for problem in ui_problems:
+            print("  - %s" % problem)
+        return 4
+
     app = Application(
         db_path=args.db, phase=args.phase, base_url=args.base_url,
         copy_pack=copy_pack, export_token=args.export_token,
