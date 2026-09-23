@@ -22,7 +22,7 @@ marketing/
                   t0_evidence.template.json（--phase t0 必填的 T0 证据模板）
   tests/          42 项单测（合规 / 落地页链路 / 链接生成 / QR 参考比对 / PRO-13 装置加固）
   reports/        asset-compliance-report.md · pro10-power-and-mde.md · selftest-synthetic-receipt.md
-                  asset-review-editor.md（人工复审报告现行版本 = PRO-14 增量复审，基线 725f5b9，由 Editor 维护）
+                  asset-review-editor.md（人工复审报告：Editor 维护，就地覆盖、唯一现行版本、不绑定轮次；版本与复审基线以该文件头「复审基线」行为准）
   out/            links.csv + links/*.txt + qr/*.svg|png（生成物）
 ```
 
@@ -74,7 +74,8 @@ python3 marketing/landing/app.py --phase t0 --t0-evidence <T0 证据 JSON>
 | ③ | 界面文案必需键完整性（`ui.*`，缺失即 fail-closed） | 4 |
 
 因此「T0 前误投量化承诺」与「T0 前误用 t0 臂文案」在装置层都不可能发生；
-页面与脚本里用户可见的每一句话都来自受扫描的文案包，不再是代码里的硬编码。
+页面与脚本里的**对外投放文案**已全部来自受扫描的文案包，不再硬编码在代码里。
+仍留在 `app.py` 的页脚版本/变体/候选标签（运维核对用）、渲染兜底默认值与 `/api/*` 错误文案**不属投放文案**（见 `docs/08` §1.3 / §9.3 D-4 的口径收窄）。
 
 ## 4. 隐私与数据
 

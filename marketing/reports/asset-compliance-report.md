@@ -1,7 +1,7 @@
 # 投放素材合规审查报告（PRO-10）
 
 > 由 `marketing/scripts/compliance_lint.py` 生成。词表：`marketing/compliance/lexicon.json`（hard_ban 18 条 + t0_gated 6 条）；清单：`marketing/compliance/scan_manifest.json`。
-> 生成时间（UTC）：2026-09-23T17:22:39+00:00
+> 生成时间（UTC）：2026-09-23T17:33:37+00:00
 
 ## 结论
 
