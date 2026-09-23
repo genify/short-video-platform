@@ -1,0 +1,17 @@
+创作者：待录入（c016 / 待录入）
+平台：wechat    垂类：local-life    批次：B1
+
+【招募链接 · 直接发给创作者本人】
+https://landing.local/?utm_source=wechat&utm_medium=creator_recruit&utm_campaign=pro_launch_p1&utm_content=c016&ref=c016
+
+【分享链接模板 · 创作者发给自己观众，需替换两个占位符】
+https://app.local/s/{video_id}?utm_source=wechat&utm_medium=creator_share&utm_campaign=pro_launch_p1&utm_content=c016&ref=c016&v={variant}
+  {video_id} → 视频 id；{variant} → 1/2/3（对应 V1 确定性 / V2 收益透明 / V3 省时间）
+  示例：https://app.local/s/v_demo01?utm_source=wechat&utm_medium=creator_share&utm_campaign=pro_launch_p1&utm_content=c016&ref=c016&v=1
+
+【二维码】
+  qr/c016_wechat.svg（矢量，印刷 / 课件）    qr/c016_wechat.png（位图，社群发图）
+  二维码内容 = 上面的招募链接（逐字一致，不得手改参数）
+
+注意：以上链接带来源参数，是站外回流归因（边 v / r）的唯一取数依据；
+      不得替换为短链或去参数链接，否则该创作者的贡献将无法计入循环。

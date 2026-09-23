@@ -1,0 +1,23 @@
+creator_code,name,platform,vertical,handle,channel_url,batch,is_demo,notes
+c001,待录入,douyin,food-home,,,B1,0,首批种子队列（种子来源：公开可见信息人工判读；不存储非公开数据）
+c002,待录入,douyin,food-home,,,B1,0,
+c003,待录入,douyin,food-dine-out,,,B1,0,
+c004,待录入,douyin,food-dine-out,,,B1,0,
+c005,待录入,douyin,local-life,,,B1,0,
+c006,待录入,douyin,local-life,,,B1,0,
+c007,待录入,douyin,food-home,,,B1,0,
+c008,待录入,xiaohongshu,food-home,,,B1,0,
+c009,待录入,xiaohongshu,food-home,,,B1,0,
+c010,待录入,xiaohongshu,food-dine-out,,,B1,0,
+c011,待录入,xiaohongshu,food-dine-out,,,B1,0,
+c012,待录入,xiaohongshu,local-life,,,B1,0,
+c013,待录入,xiaohongshu,local-life,,,B1,0,
+c014,待录入,wechat,food-home,,,B1,0,站外社群运营的创作者身份账号
+c015,待录入,wechat,food-dine-out,,,B1,0,
+c016,待录入,wechat,local-life,,,B1,0,
+c017,待录入,bilibili,food-home,,,B1,0,
+c018,待录入,bilibili,food-dine-out,,,B1,0,
+c019,待录入,bilibili,local-life,,,B1,0,
+c020,待录入,douyin,food-dine-out,,,B1,0,队列末位：用于 A7 的 30 日留任样本
+d001,演示-家常菜,douyin,food-home,@demo_food_01,,DEMO,1,工具链演示行（非真实账号，禁止对外）
+d002,演示-探店,xiaohongshu,food-dine-out,@demo_dine_02,,DEMO,1,工具链演示行（非真实账号，禁止对外）

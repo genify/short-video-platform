@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "title": "合规扫描目标清单（唯一现行版本）",
+  "modes": {
+    "strict": "任何命中即为违规（相位由 phase 字段决定：pre_t0 = hard_ban + t0_gated 全禁；t0 = 只禁 hard_ban）",
+    "quoted": "命中仅当同一行不含 quoted_context_markers 之一时才判违规（用于引用黑名单/红线本身的规则文档）",
+    "strict_text_only": "目录：跳过二进制文件，只扫文本"
+  },
+  "targets": [
+    {"id": "T-01", "path": "marketing/landing/copy_pack.json", "mode": "strict", "phase": "both", "note": "两臂分别校验：pre_t0 节点禁 hard_ban+t0_gated；t0 节点禁 hard_ban"},
+    {"id": "T-02", "path": "marketing/data/community_scripts.md", "mode": "strict", "phase": "pre_t0", "note": "渠道 3 社群脚本（创作者身份发声）"},
+    {"id": "T-03", "path": "marketing/data/share_scripts.md", "mode": "strict", "phase": "pre_t0", "note": "渠道 2 分享话术模板"},
+    {"id": "T-04", "path": "marketing/data/creator_outreach.md", "mode": "strict", "phase": "pre_t0", "note": "1v1 招募话术（T0 前使用）"},
+    {"id": "T-05", "path": "marketing/data/naming_test_brief.md", "mode": "strict", "phase": "pre_t0", "note": "命名测试投放物料说明"},
+    {"id": "T-06", "path": "docs/08-gtm-channel-execution-pack.md", "mode": "quoted", "phase": "t0", "note": "本单交付文档本身会引用黑名单，故按引用模式扫描"},
+    {"id": "T-07", "path": "marketing/out/links.csv", "mode": "strict", "phase": "pre_t0", "note": "生成物：链接注册表（URL 内含 utm 值，须无违禁词）"},
+    {"id": "T-08", "path": "marketing/out/qr/", "mode": "strict_text_only", "phase": "pre_t0", "note": "生成物：二维码文件（跳过二进制，只扫文本）"},
+    {"id": "T-09", "path": "marketing/data/creator_promise_card.md", "mode": "strict", "phase": "t0", "note": "确定性承诺卡（T0 起才可对外使用，含 §3.5 白名单 3 个数字）"}
+  ],
+  "required_token_scopes": {
+    "recruit_form": {"path": "marketing/landing/copy_pack.json", "node": "assets.recruit.form.consent_text"}
+  },
+  "exempt_paths": [
+    "docs/05-gtm-plan.md",
+    "docs/01-competitive-analysis.md",
+    "docs/04-mvp-prd.md",
+    "docs/06-user-needs-map-and-assumption-plan.md",
+    "docs/07-product-strategy.md"
+  ]
+}
