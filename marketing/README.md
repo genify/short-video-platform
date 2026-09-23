@@ -22,7 +22,7 @@ marketing/
                   t0_evidence.template.json（--phase t0 必填的 T0 证据模板）
   tests/          42 项单测（合规 / 落地页链路 / 链接生成 / QR 参考比对 / PRO-13 装置加固）
   reports/        asset-compliance-report.md · pro10-power-and-mde.md · selftest-synthetic-receipt.md
-                  asset-review-editor.md（PRO-12 人工终审，由 Editor 维护）
+                  asset-review-editor.md（人工复审报告现行版本 = PRO-14 增量复审，基线 725f5b9，由 Editor 维护）
   out/            links.csv + links/*.txt + qr/*.svg|png（生成物）
 ```
 

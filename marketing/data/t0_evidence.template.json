@@ -20,5 +20,5 @@
     {"id": "#8", "name": "见 docs/05-gtm-plan.md §0.3 #8", "status": "pending", "evidence": ""}
   ],
   "approved_by": "",
-  "notes": "模板默认全 false：这是刻意的 fail-closed 默认值，防止有人直接拿模板当证据启动 t0 相位。"
+  "notes": "模板默认全 false：这是刻意的 fail-closed 默认值，防止有人直接拿模板当证据启动 t0 相位。门禁能力边界（PRO-14 R-6）：启动校验只检查证据信封的结构完整性——pro7_delivered / preconditions_all_green 均为 true、preconditions 条目数 ≥ 8、evidence_date 非空；它不校验这八项证据内容的真伪。八项证据的真实性由证据留档 + 人工复核负责，门禁不能替代人工判断。"
 }

@@ -24,7 +24,7 @@
   "device_files": {
     "note": "非投放物料的装置/配置/自测文件。此处显式登记「为什么不在扫描范围内」，避免出现「看起来扫了、其实没扫」的静默盲区（PRO-12 §5 D-2/D-4 的教训）。",
     "entries": [
-      {"path": "marketing/landing/app.py", "reason": "渲染代码：自 PRO-13 起其用户可见文案已抽到 copy_pack.json 的 ui.* 节点（T-01 扫描），代码内不再保留对外文案字面量"},
+      {"path": "marketing/landing/app.py", "reason": "渲染代码：自 PRO-13 起其**对外文案**（页面正文与内联脚本提示语）已抽到 copy_pack.json 的 ui.* 节点（由 T-01 扫描）；仍留在本文件的是页脚版本/变体/候选标签（运维核对用）、渲染兜底默认值与 /api/* 错误文案——均为站内运维/异常路径文本，不属对外投放文案，故不纳入投放扫描（PRO-14 R-4：原登记理由「代码内不再保留对外文案字面量」不实，已改写为现状；此为登记准确性问题，非投放违规）"},
       {"path": "marketing/landing/compliance.py", "reason": "校验器代码与自测断言：为测试规则而引用禁用样例，不属投放文案"},
       {"path": "marketing/scripts/compliance_lint.py", "reason": "审查器代码：同上"},
       {"path": "marketing/scripts/make_creator_links.py", "reason": "生成器代码：内置 hard_ban 校验，链接产物由 T-07 覆盖"},
