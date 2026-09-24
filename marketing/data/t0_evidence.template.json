@@ -10,14 +10,14 @@
   "preconditions_all_green": false,
   "evidence_date": "",
   "preconditions": [
-    {"id": "#1", "name": "见 docs/05-gtm-plan.md §0.3 #1", "status": "pending", "evidence": ""},
+    {"id": "#1", "name": "最小鉴权 + 限流（docs/05 §0.3 #1）", "status": "pending", "evidence": ""},
     {"id": "#2", "name": "曝光埋点（exposure）", "status": "pending", "evidence": ""},
     {"id": "#3", "name": "注册来源埋点", "status": "pending", "evidence": ""},
     {"id": "#4", "name": "首刷兴趣 ground truth", "status": "pending", "evidence": ""},
     {"id": "#5", "name": "来源参数 + 归因落库", "status": "pending", "evidence": ""},
     {"id": "#6", "name": "feed 组成日志", "status": "pending", "evidence": ""},
     {"id": "#7", "name": "假门落地页 + 分流统计（本团队已交付）", "status": "ready", "evidence": "docs/08-gtm-channel-execution-pack.md"},
-    {"id": "#8", "name": "见 docs/05-gtm-plan.md §0.3 #8", "status": "pending", "evidence": ""}
+    {"id": "#8", "name": "最小可点上传页 + 首页 feed 页 + dislike/report 最小 API（docs/05 §0.3 #8）", "status": "pending", "evidence": ""}
   ],
   "approved_by": "",
   "notes": "模板默认全 false：这是刻意的 fail-closed 默认值，防止有人直接拿模板当证据启动 t0 相位。门禁能力边界（PRO-14 R-6）：启动校验只检查证据信封的结构完整性——pro7_delivered / preconditions_all_green 均为 true、preconditions 条目数 ≥ 8、evidence_date 非空；它不校验这八项证据内容的真伪。八项证据的真实性由证据留档 + 人工复核负责，门禁不能替代人工判断。"
