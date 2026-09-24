@@ -51,6 +51,7 @@ class FeedItem:
     features: dict[str, float]
     routes: list[str]
     reason: str
+    is_exploration: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +281,116 @@ class RecommendEngine:
         )
 
     # ------------------------------------------------------------------
+    # 探索位（ε-greedy，FR-2.4）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _exposure_percentile(values: Sequence[float], pct: float) -> float:
+        """最近秩（nearest-rank）分位数；空集返回 0.0。
+
+        用最近秩而非线性插值：分位数阈值只用于**比较**，插值不会改变
+        "有多少条低于阈值"的结论，但实现更难解释 —— 可解释性优先。
+        """
+        if not values:
+            return 0.0
+        ordered = sorted(float(v) for v in values)
+        k = max(0, min(len(ordered) - 1, int(math.ceil(pct * len(ordered))) - 1))
+        return ordered[k]
+
+    def exploration_candidates(
+        self,
+        scored: Sequence[Candidate],
+        library: Sequence[dict[str, Any]],
+        *,
+        user_id: str,
+        profile: dict[str, float],
+        following: set[str],
+        second_hop: set[str],
+        max_total: float,
+        now: float,
+        seen: set[str],
+    ) -> list[Candidate]:
+        """返回「探索位可用候选」集合（按 score 降序）。
+
+        **为什么要显式补入库内低曝光候选**：多路召回的深度截断会**按定义**
+        淘汰低曝光长尾（`fresh` 路由要求 HN 分 > 0、`fallback` 路由按热度排序
+        且只取前 N 条），而"低曝光长尾"恰恰就是探索位的目标物。若只在召回池
+        里挑，探索位在稀疏内容库上永远挑不出候选 —— 这正是 G1 那类"声称有、
+        实际永不发生"的失效模式（本轮实测即命中：40 条库里有 10 条零曝光长尾，
+        但 300 个 seed 一次都没注入）。
+
+        因此这里把库内**低曝光分位**候选显式补入，并用**同一套特征函数与打分
+        函数**评分 —— 排序口径与主链路一致，探索项依然完全可解释、可归因。
+        """
+        threshold = self._exposure_percentile(
+            [float(v.get("views") or 0) for v in library], config.EXPLORE_EXPOSURE_PCT
+        )
+        if threshold <= 0:
+            return list(scored)   # 全站都没有"低曝光"概念，无需补入
+        in_pool = {c.video_id for c in scored}
+        extras: list[Candidate] = []
+        for video in library:
+            vid = video["id"]
+            if vid in in_pool or vid in seen:
+                continue
+            if float(video.get("views") or 0) >= threshold:
+                continue
+            cand = Candidate(video=video, routes={"explore_tail"})
+            cand.features = self.features(
+                user_id, cand, profile=profile, following=following,
+                second_hop=second_hop, max_total=max_total, now=now, seen_video_ids=seen,
+            )
+            cand.score = self.score(cand.features)
+            extras.append(cand)
+        if not extras:
+            return list(scored)
+        combined = sorted(extras + list(scored), key=lambda c: c.score, reverse=True)
+        return combined
+
+    def pick_exploration(
+        self,
+        scored: Sequence[Candidate],
+        selected: Sequence[Candidate],
+        library: Sequence[dict[str, Any]],
+        *,
+        cold_start: bool,
+        seed: int | None,
+    ) -> Candidate | None:
+        """按 FR-2.4 选一条探索候选；不满足条件时返回 None（宁缺毋滥）。
+
+        规则（冻结）：
+        - 冷启动用户不注入（兜底池已承担探索职能）；
+        - `rng.random() < EPSILON_EXPLORE`（种子可复现）才注入；
+        - 仅从**未进入最终 feed** 的候选中选，且"曝光量 < 全站 P30"；
+        - 按 score 降序取第一条；无合格候选则不注入。
+
+        ⚠️ 曝光口径说明：真正的曝光量（`FeedImpression`）尚未实现（PRD M1），
+        此处以 `views` 作为**最近似代理**。这意味着探索候选的筛选条件会随
+        M1 落地而上移为真实曝光分位 —— 行为会变，已在 README「已知未实现」
+        中登记，不得当作最终口径。
+        """
+        if cold_start:
+            return None
+        # 位次约束：注入索引固定为 EXPLORE_SLOT_INDEX，故 feed 必须够长
+        if len(selected) <= config.EXPLORE_SLOT_INDEX:
+            return None
+        rng = random.Random((seed or 0) + 977)
+        if rng.random() >= config.EPSILON_EXPLORE:
+            return None
+
+        threshold = self._exposure_percentile(
+            [float(v.get("views") or 0) for v in library], config.EXPLORE_EXPOSURE_PCT
+        )
+        if threshold <= 0:
+            return None
+        chosen = {c.video_id for c in selected}
+        for cand in scored:  # 已按 score 降序
+            if cand.video_id in chosen:
+                continue
+            if float(cand.video.get("views") or 0) < threshold:
+                return cand
+        return None
+
+    # ------------------------------------------------------------------
     # 重排
     # ------------------------------------------------------------------
     def rerank(
@@ -386,21 +497,36 @@ class RecommendEngine:
         # 排序后截断到重排池上限
         candidates.sort(key=lambda c: c.score, reverse=True)
         pool = candidates[: config.MMR_CANDIDATE_POOL]
-        reranked = self.rerank(pool, size, seed=seed)
+        reranked = list(self.rerank(pool, size, seed=seed))
 
-        items: list[FeedItem] = []
-        explore_slots = 0
-        if not cold_start and len(reranked) > 1:
-            rng = random.Random((seed or 0) + 977)
-            if rng.random() < config.EPSILON_EXPLORE:
-                explore_slots = 1
-        items = [
+        # ---- ε-greedy 探索位（FR-2.4；修复 G1 死代码）----
+        # 历史缺陷：这里曾计算 explore_slots 却在构造 FeedItem 时硬编码
+        # is_exploration=False，导致"10% 探索流量"从未真实投放（README 与
+        # v1.0 PRD 的声明不成立）。现在改为真实注入：固定插入索引 3，
+        # 并截断回 size（"替换一个位置"，feed 长度不变）。
+        explore = self.pick_exploration(
+            self.exploration_candidates(
+                candidates, library, user_id=user_id, profile=profile,
+                following=following, second_hop=second_hop, max_total=max_total,
+                now=now, seen=seen,
+            ),
+            reranked,
+            library,
+            cold_start=cold_start,
+            seed=seed,
+        )
+        if explore is not None:
+            reranked.insert(config.EXPLORE_SLOT_INDEX, explore)
+            reranked = reranked[:size]
+
+        items: list[FeedItem] = [
             FeedItem(
                 video=c.video,
                 score=c.score,
                 features=c.features,
                 routes=sorted(c.routes),
-                reason=_reason_for(c),
+                reason=_reason_for(c, is_exploration=(c is explore)),
+                is_exploration=(c is explore),
             )
             for c in reranked
         ]
@@ -416,7 +542,7 @@ class RecommendEngine:
                 "score": it.score,
                 "reason": it.reason,
                 "recall_routes": it.routes,
-                "is_exploration": False,
+                "is_exploration": it.is_exploration,
             }
             if include_explanation:
                 entry["features"] = it.features
@@ -427,11 +553,12 @@ class RecommendEngine:
             "cold_start": cold_start,
             "size": len(out_items),
             "weight_version": dict(self.weights),
+            "exploration_injected": explore is not None,
             "items": out_items,
         }
 
 
-def _reason_for(cand: Candidate) -> str:
+def _reason_for(cand: Candidate, is_exploration: bool = False) -> str:
     """生成人类可读的推荐理由，便于运营与调试归因。"""
     feats = cand.features or {}
     top = max(feats.items(), key=lambda kv: kv[1])[0] if feats else "pop"
@@ -448,6 +575,8 @@ def _reason_for(cand: Candidate) -> str:
         "fresh": "热门新鲜",
         "tag": "标签匹配",
         "fallback": "冷启动兜底",
+        "explore_tail": "低曝光长尾",
     }
     routes = "/".join(route_label.get(r, r) for r in sorted(cand.routes))
-    return f"{label}主导（召回路径：{routes}）"
+    prefix = "探索位（低曝光注入）｜" if is_exploration else ""
+    return f"{prefix}{label}主导（召回路径：{routes}）"
