@@ -19,5 +19,9 @@ htmlcov/
 *.swp
 .DS_Store
 
-# 落地页运行时数据库（不纳入版本控制）
+# 落地页运行时数据（数据库不纳入版本控制）
 marketing/out/*.sqlite3
+
+# 落地页上线运维产物（日志与 pid 不纳入版本控制）
+marketing/out/*.log
+marketing/out/*.pid
