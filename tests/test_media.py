@@ -252,6 +252,22 @@ class TestMediaValidation(unittest.TestCase):
             media.validate_upload(self._upload("a.mp4", "video/mp4", size=0), {"available": False})
         self.assertEqual(ctx.exception.code, "empty_file")
 
+    def test_fails_closed_when_probe_unavailable(self):
+        """PRD §10.4 C5：ffprobe 缺失时必须 **fail-closed**（503），不得放行。
+
+        历史缺陷：`validate_upload` 在 `meta["available"] is False` 时**整体跳过**
+        时长/分辨率校验（fail-open）—— 一个环境问题（未装 ffprobe）就等于给
+        上传开了一道绕过时长/分辨率限制的后门，且攻击者能主动制造该状态。
+        正确语义：依赖不可用是**服务端**问题 → 503（而不是 4xx 客户端错误），
+        且必须拒绝写入，而不是"降级接受"。
+        """
+        with self.assertRaises(media.UploadError) as ctx:
+            media.validate_upload(
+                self._upload("ok.mp4", "video/mp4"), {"available": False}
+            )
+        self.assertEqual(ctx.exception.code, "probe_unavailable")
+        self.assertEqual(ctx.exception.status, 503)
+
 
 class TestProbeAndStorage(unittest.TestCase):
     def setUp(self) -> None:

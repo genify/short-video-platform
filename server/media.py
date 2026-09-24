@@ -322,7 +322,11 @@ _NO_PROBE = {"available": False, "duration_ms": 0, "width": 0, "height": 0,
 
 
 def probe_media(path: str) -> dict[str, Any]:
-    """调用 ffprobe 读取时长/分辨率/编码。ffprobe 缺失时降级为 0 值并标记。"""
+    """调用 ffprobe 读取时长/分辨率/编码。
+
+    注意：ffprobe 缺失时**不在这里抛错**，而是返回 `available=False`；
+    调用方（`validate_upload`）必须 **fail-closed** 地拒绝上传 —— 见下。
+    """
     exe = shutil.which("ffprobe")
     if not exe:
         return dict(_NO_PROBE)
@@ -374,17 +378,28 @@ def validate_upload(upload: UploadedFile, meta: dict[str, Any]) -> None:
         )
     if upload.size_bytes == 0:
         raise UploadError("文件为空", code="empty_file")
-    if meta.get("available"):
-        dur = int(meta.get("duration_ms") or 0)
-        if dur and dur < config.MIN_DURATION_MS:
-            raise UploadError("视频时长过短（<1 秒）", code="duration_too_short")
-        if dur and dur > config.MAX_DURATION_MS:
-            raise UploadError(
-                f"视频时长 {dur / 1000:.1f}s 超过短视频上限 {config.MAX_DURATION_MS / 1000:.0f}s",
-                code="duration_too_long",
-            )
-        if meta.get("height") and int(meta["height"]) < 240:
-            raise UploadError("分辨率过低（高度 < 240px）", code="resolution_too_low")
+
+    # fail-closed（PRD §10.4 C5）：元数据不可信时**必须拒绝**，不得静默放行。
+    # 历史缺陷：ffprobe 缺失时时长/分辨率校验被整体跳过（fail-open），
+    # 等于给"环境问题"开了一道可绕过时长与分辨率限制的后门。
+    # 正确处置：依赖不可用 → 503（服务端问题，非客户端问题，故不是 4xx）。
+    if not meta.get("available"):
+        raise UploadError(
+            "服务端视频探测依赖（ffprobe）不可用，暂时无法校验上传",
+            status=503,
+            code="probe_unavailable",
+        )
+
+    dur = int(meta.get("duration_ms") or 0)
+    if dur and dur < config.MIN_DURATION_MS:
+        raise UploadError("视频时长过短（<1 秒）", code="duration_too_short")
+    if dur and dur > config.MAX_DURATION_MS:
+        raise UploadError(
+            f"视频时长 {dur / 1000:.1f}s 超过短视频上限 {config.MAX_DURATION_MS / 1000:.0f}s",
+            code="duration_too_long",
+        )
+    if meta.get("height") and int(meta["height"]) < 240:
+        raise UploadError("分辨率过低（高度 < 240px）", code="resolution_too_low")
 
 
 # ---------------------------------------------------------------------------
