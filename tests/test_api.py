@@ -2,6 +2,11 @@
 
 这是本项目最重要的一组测试——它证明 MVP 的核心功能（视频上传 + 推荐流）
 在真实 HTTP 协议下可用，而不只是在单元层面成立。
+
+**鉴权契约（FR-3/FR-4）下的写法**：`mkuser()` 通过 HTTP 注册用户并**记住其
+token**，同时把该用户设为"当前身份"；之后的请求默认带上它的 `Authorization`
+头。需要无凭据请求时显式传 `token=None`。测试档限流被放宽（逐端点限流行为
+由 `tests/test_auth.py` 用严格档覆盖），以免用例互相挤占额度。
 """
 
 from __future__ import annotations
@@ -9,11 +14,13 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import secrets
 import sys
 import tempfile
 import threading
 import unittest
 import uuid
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -22,13 +29,23 @@ from server.app import Application, serve  # noqa: E402
 from server.db import Database  # noqa: E402
 from tests.test_media import BOUNDARY, build_multipart, make_real_mp4  # noqa: E402
 
+_NO_TOKEN = object()          # 哨兵：区分"用当前身份"与"显式不带凭据"
+_BIG = 100000                 # 测试档限流容量（等价于"不限流"）
+
+# 测试档：按生产配置的**形状**生成宽松额度，避免用例互相挤占令牌桶。
+# 这里刻意不写死端点名，生产新增/改名端点时测试档自动跟随。
+TEST_RATE_LIMITS = {
+    name: {key: (_BIG, window) for key, (_limit, window) in rules.items()}
+    for name, rules in config.RATE_LIMITS.items()
+}
+
 
 class ApiServerCase(unittest.TestCase):
     """起一个真实 HTTP 服务，端口由系统分配（port=0）。"""
 
     # 预先合成 12 段不同时长的真实 mp4。
-    # 为什么必须不同：上传接口按 sha256 去重，若夹具复用同一份字节，
-    # 第 2 条起都会 409，正常路径根本走不到，测试会"假通过"。
+    # 为什么必须不同：上传接口按 sha256 去重，若夹具复用同一份字节，第 2 条
+    # 起都会 409，正常路径根本走不到，测试会"假通过"。
     # 用极低帧率（4fps）控制合成耗时——目标是字节差异与时长元数据，不是画质。
     clips: list[bytes] = []
 
@@ -42,8 +59,17 @@ class ApiServerCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self._old_db = config.DB_PATH
         self._old_media = config.MEDIA_ROOT
+        self._old_limits = config.RATE_LIMITS
+        self._old_admin = config.ADMIN_TOKEN
         config.DB_PATH = os.path.join(self.tmp.name, "api.db")
         config.MEDIA_ROOT = os.path.join(self.tmp.name, "media")
+        config.RATE_LIMITS = TEST_RATE_LIMITS
+        # 管理员凭据：运行时生成，**不得在代码里写死任何密钥**
+        self.admin_token = secrets.token_urlsafe(24)
+        config.ADMIN_TOKEN = self.admin_token
+
+        self.tokens: dict[str, str] = {}
+        self.actor: str | None = None
 
         self.db = Database(config.DB_PATH)
         self.app = Application(self.db)
@@ -59,13 +85,20 @@ class ApiServerCase(unittest.TestCase):
         self.db.close()
         config.DB_PATH = self._old_db
         config.MEDIA_ROOT = self._old_media
+        config.RATE_LIMITS = self._old_limits
+        config.ADMIN_TOKEN = self._old_admin
         self.tmp.cleanup()
 
     # -- HTTP 工具 --------------------------------------------------------
     def request(self, method: str, path: str, body: bytes | None = None,
-                ctype: str = "application/json") -> tuple[int, dict | bytes]:
+                ctype: str = "application/json", token: Any = _NO_TOKEN,
+                extra_headers: dict[str, str] | None = None) -> tuple[int, dict | bytes]:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
-        headers = {}
+        headers: dict[str, str] = dict(extra_headers or {})
+        if token is _NO_TOKEN:
+            token = self.tokens.get(self.actor or "")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         if body is not None:
             headers["Content-Type"] = ctype
             headers["Content-Length"] = str(len(body))
@@ -78,19 +111,24 @@ class ApiServerCase(unittest.TestCase):
             return status, json.loads(raw.decode("utf-8"))
         return status, raw
 
-    def post_json(self, path: str, payload: dict) -> tuple[int, dict]:
-        return self.request("POST", path, json.dumps(payload).encode("utf-8"))  # type: ignore[return-value]
+    def post_json(self, path: str, payload: dict, token: Any = _NO_TOKEN) -> tuple[int, dict]:
+        return self.request(  # type: ignore[return-value]
+            "POST", path, json.dumps(payload).encode("utf-8"), token=token
+        )
 
-    def get_json(self, path: str) -> tuple[int, dict]:
-        return self.request("GET", path)  # type: ignore[return-value]
+    def get_json(self, path: str, token: Any = _NO_TOKEN) -> tuple[int, dict]:
+        return self.request("GET", path, token=token)  # type: ignore[return-value]
 
     def clip(self, i: int = 0) -> bytes:
         return self.clips[i % len(self.clips)]
 
     # -- 造数 -------------------------------------------------------------
-    def mkuser(self, handle: str) -> str:
-        status, data = self.post_json("/api/users", {"handle": handle})
+    def mkuser(self, handle: str, **extra: Any) -> str:
+        """注册用户并把其设为当前身份；返回 user_id。"""
+        status, data = self.post_json("/api/users", {"handle": handle, **extra})
         self.assertEqual(status, 201, data)
+        self.tokens[data["id"]] = data["token"]
+        self.actor = data["id"]
         return data["id"]
 
     def list_videos(self) -> list[dict]:
@@ -99,13 +137,16 @@ class ApiServerCase(unittest.TestCase):
         return data["videos"]
 
     def upload(self, creator_id: str, caption: str, tags: str = "", data: bytes | None = None,
-               filename: str = "clip.mp4", mime: str = "video/mp4") -> tuple[int, dict]:
+               filename: str = "clip.mp4", mime: str = "video/mp4",
+               token: Any = _NO_TOKEN) -> tuple[int, dict]:
         body = build_multipart(
             {"creator_id": creator_id, "caption": caption, "tags": tags},
             [("file", filename, mime, data if data is not None else self.clip(0))],
         )
+        if token is _NO_TOKEN:
+            token = self.tokens.get(creator_id)
         return self.request(  # type: ignore[return-value]
-            "POST", "/api/videos", body, f"multipart/form-data; boundary={BOUNDARY}"
+            "POST", "/api/videos", body, f"multipart/form-data; boundary={BOUNDARY}", token=token
         )
 
 
@@ -138,6 +179,7 @@ class TestUsers(ApiServerCase):
         self.assertEqual(data["error"]["code"], "invalid_handle")
 
     def test_missing_user_returns_404(self):
+        self.mkuser("probe_reads")   # 读接口需凭据（FR-4.1.c）
         status, data = self.get_json(f"/api/users/{uuid.uuid4().hex}")
         self.assertEqual(status, 404)
         self.assertEqual(data["error"]["code"], "user_not_found")
@@ -195,6 +237,8 @@ class TestVideoUpload(ApiServerCase):
         self.assertEqual(s2, 409)
         self.assertEqual(data["error"]["code"], "duplicate_video")
         self.assertIn(v1["id"], data["error"]["message"])
+        # 冻结契约（PRD §8.5）：顶层 video_id 必须回传，客户端按幂等成功处理
+        self.assertEqual(data["video_id"], v1["id"])
 
     def test_upload_rejects_oversize_duration(self):
         """400 秒视频超过 180 秒短视频上限，必须被拒绝。
@@ -220,11 +264,30 @@ class TestVideoUpload(ApiServerCase):
         self.assertEqual(data["error"]["code"], "unsupported_extension")
 
     def test_upload_requires_existing_creator(self):
-        status, data = self.upload(uuid.uuid4().hex, "无主视频")
-        self.assertEqual(status, 404)
-        self.assertEqual(data["error"]["code"], "user_not_found")
+        """身份校验优先于存在性校验（FR-4.1.b）。
+
+        契约变更说明：鉴权上线前，用任意（不存在的）creator_id 上传会走到
+        `user_not_found` 404；上线后必须先通过身份一致性校验 —— 用别人的 id
+        上传是**越权冒用**，语义上就该是 403 而非 404（404 还会泄露"该用户是否
+        存在"）。不存在用户的 404 仍有覆盖：见下方 deleted-user 用例与
+        `GET /api/users/{id}` 的 404 用例。
+        """
+        self.mkuser("creator_owner")
+        status, data = self.upload(uuid.uuid4().hex, "冒用他人身份上传",
+                                   token=self.tokens[self.actor])
+        self.assertEqual(status, 403)
+        self.assertEqual(data["error"]["code"], "identity_mismatch")
+
+    def test_upload_with_token_of_deleted_user_is_rejected(self):
+        """凭据对应用户已被删除 → 401（fail-closed，不得凭残留 token 上传）。"""
+        ghost = self.mkuser("ghost_creator")
+        self.db.execute("DELETE FROM users WHERE id=?", (ghost,))
+        status, data = self.upload(ghost, "幽灵用户上传")
+        self.assertEqual(status, 401)
+        self.assertEqual(data["error"]["code"], "token_invalid")
 
     def test_upload_rejects_plain_json_body(self):
+        self.mkuser("jsonbody")
         status, data = self.post_json("/api/videos", {"caption": "no file"})
         self.assertEqual(status, 400)
         self.assertEqual(data["error"]["code"], "bad_content_type")
@@ -287,13 +350,26 @@ class TestFeedApi(ApiServerCase):
         self.assertIn("weight_version", data)
 
     def test_feed_requires_user_id(self):
+        self.mkuser("feed_no_id")   # 未鉴权会在参数校验之前被 401 拦下
         status, data = self.get_json("/api/feed")
         self.assertEqual(status, 400)
         self.assertEqual(data["error"]["code"], "missing_user_id")
 
     def test_feed_404_for_unknown_user(self):
+        """契约变更：查询他人 user_id 属越权冒用 → 403；未知用户的 404 落在业务层。"""
+        mine = self.mkuser("feed_self")
         status, data = self.get_json(f"/api/feed?user_id={uuid.uuid4().hex}")
-        self.assertEqual(status, 404)
+        self.assertEqual(status, 403)
+        self.assertEqual(data["error"]["code"], "identity_mismatch")
+
+        # 业务层仍必须对不存在的用户返回 404（绕过 HTTP 鉴权直达 Application）
+        from server.app import ApiError
+
+        with self.assertRaises(ApiError) as ctx:
+            self.app.feed({"user_id": [uuid.uuid4().hex]})
+        self.assertEqual(ctx.exception.status, 404)
+        self.assertEqual(ctx.exception.code, "user_not_found")
+        self.assertTrue(mine)
 
     def test_feed_respects_size_parameter(self):
         self._populate()
@@ -446,7 +522,7 @@ class TestCfRebuildApi(ApiServerCase):
             for v in (v1, v2):
                 self.post_json("/api/engagements",
                                {"user_id": u, "video_id": v["id"], "kind": "view"})
-        status, data = self.post_json("/api/admin/rebuild-cf", {})
+        status, data = self.post_json("/api/admin/rebuild-cf", {}, token=self.admin_token)
         self.assertEqual(status, 200, data)
         self.assertGreater(data["item_sim_pairs"], 0)
         sims = self.db.item_similarity([v1["id"]])
