@@ -24,6 +24,18 @@ CREATE TABLE IF NOT EXISTS users (
     created_at  REAL NOT NULL
 );
 
+-- FR-3.1：账号凭据与会话令牌（只存 sha256，永不存明文）
+CREATE TABLE IF NOT EXISTS user_tokens (
+    token_hash   TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at   REAL NOT NULL,
+    expires_at   REAL NOT NULL,
+    last_seen_at REAL NOT NULL,
+    revoked      INTEGER NOT NULL DEFAULT 0,
+    auth_level   TEXT NOT NULL DEFAULT 'dev'
+);
+CREATE INDEX IF NOT EXISTS idx_user_tokens_user ON user_tokens(user_id);
+
 CREATE TABLE IF NOT EXISTS videos (
     id           TEXT PRIMARY KEY,
     creator_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -111,7 +123,23 @@ class Database:
 
     def _init_schema(self) -> None:
         with self._write_lock:
-            self.connect().executescript(SCHEMA)
+            conn = self.connect()
+            conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    # 幂等增量迁移：老库（无这些列）升级到新 schema 时补齐，新库无操作。
+    # 为什么不用 `ALTER TABLE ... IF NOT EXISTS`：SQLite 不支持该语法，
+    # 只能先查 PRAGMA table_info 再决定是否加列 —— 重复执行必须安全。
+    _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+        ("users", "interest_tags", "TEXT NOT NULL DEFAULT '[]'"),
+        ("users", "source", "TEXT NOT NULL DEFAULT ''"),
+    )
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        for table, column, ddl in self._MIGRATIONS:
+            existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
@@ -138,21 +166,85 @@ class Database:
     # ------------------------------------------------------------------
     # 用户
     # ------------------------------------------------------------------
-    def create_user(self, user_id: str, handle: str, display: str = "") -> dict[str, Any]:
+    def create_user(
+        self,
+        user_id: str,
+        handle: str,
+        display: str = "",
+        interest_tags: Sequence[str] | None = None,
+        source: str = "",
+    ) -> dict[str, Any]:
         now = time.time()
+        tags = json.dumps(list(interest_tags or []), ensure_ascii=False)
         self.execute(
-            "INSERT OR IGNORE INTO users(id, handle, display, created_at) VALUES(?,?,?,?)",
-            (user_id, handle, display or handle, now),
+            """INSERT OR IGNORE INTO users(id, handle, display, created_at, interest_tags, source)
+               VALUES(?,?,?,?,?,?)""",
+            (user_id, handle, display or handle, now, tags, source or ""),
         )
         return self.get_user(user_id) or {}
 
     def get_user(self, user_id: str) -> dict[str, Any] | None:
         row = self.query_one("SELECT * FROM users WHERE id=?", (user_id,))
-        return dict(row) if row else None
+        return _user_row_to_dict(row) if row else None
 
     def get_user_by_handle(self, handle: str) -> dict[str, Any] | None:
         row = self.query_one("SELECT * FROM users WHERE handle=?", (handle,))
-        return dict(row) if row else None
+        return _user_row_to_dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # 会话令牌（FR-3.1；只存 sha256）
+    # ------------------------------------------------------------------
+    def create_token(
+        self,
+        token_hash: str,
+        user_id: str,
+        ttl_days: float,
+        auth_level: str = "dev",
+    ) -> dict[str, Any]:
+        now = time.time()
+        expires_at = now + float(ttl_days) * 86400.0
+        self.execute(
+            """INSERT INTO user_tokens(token_hash, user_id, created_at, expires_at,
+                                       last_seen_at, revoked, auth_level)
+               VALUES(?,?,?,?,?,0,?)""",
+            (token_hash, user_id, now, expires_at, now, auth_level),
+        )
+        return {"user_id": user_id, "created_at": now, "expires_at": expires_at,
+                "auth_level": auth_level}
+
+    def get_token(self, token_hash: str) -> dict[str, Any] | None:
+        """按摘要取令牌记录（含用户是否仍存在），供鉴权层判 401/过期。"""
+        row = self.query_one(
+            """SELECT t.*, (SELECT 1 FROM users u WHERE u.id = t.user_id) AS user_exists,
+                      (SELECT u.handle FROM users u WHERE u.id = t.user_id) AS handle
+               FROM user_tokens t WHERE t.token_hash=?""",
+            (token_hash,),
+        )
+        if not row:
+            return None
+        data = dict(row)
+        data["user_exists"] = bool(data.get("user_exists"))
+        return data
+
+    def touch_token(self, token_hash: str, when: float | None = None) -> None:
+        self.execute(
+            "UPDATE user_tokens SET last_seen_at=? WHERE token_hash=?",
+            (time.time() if when is None else when, token_hash),
+        )
+
+    def revoke_token(self, token_hash: str) -> bool:
+        row = self.get_token(token_hash)
+        if not row:
+            return False
+        self.execute("UPDATE user_tokens SET revoked=1 WHERE token_hash=?", (token_hash,))
+        return True
+
+    def count_active_tokens(self, user_id: str) -> int:
+        row = self.query_one(
+            "SELECT COUNT(*) AS c FROM user_tokens WHERE user_id=? AND revoked=0",
+            (user_id,),
+        )
+        return int(row["c"]) if row else 0
 
     # ------------------------------------------------------------------
     # 视频
@@ -364,6 +456,15 @@ class Database:
             (user_id, user_id),
         )
         return {r["cid"] for r in rows}
+
+
+def _user_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    try:
+        d["interest_tags"] = json.loads(d.get("interest_tags") or "[]")
+    except (TypeError, ValueError):
+        d["interest_tags"] = []
+    return d
 
 
 def _video_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
