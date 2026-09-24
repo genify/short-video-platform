@@ -3,6 +3,26 @@
 Base URL：`http://127.0.0.1:8080`
 所有请求/响应体为 UTF-8 JSON；上传接口为 `multipart/form-data`。
 
+## 0. 鉴权与限流（自 PRO-7 起生效）
+
+所有**写接口**（上传/互动/关注/撤销会话）、**推荐流**与**用户资料读**都需要：
+
+```
+Authorization: Bearer <token>
+```
+
+令牌来源（明文只在签发响应中出现一次，服务端只存 `sha256`）：
+
+* `POST /api/users` → 响应含 `token`；
+* `POST /api/sessions {handle}` → 已存在用户换 token（开发级身份，`auth_level: "dev"`）。
+
+| 规则 | 说明 |
+|---|---|
+| 身份一致性 | 请求体/查询中的 `user_id` / `creator_id` / `follower_id` **必须等于** token 身份，否则 `403 identity_mismatch` |
+| 公开读（免鉴权） | `/api/health`、`GET /api/videos`、`GET /api/videos/{id}`、`GET /api/videos/{id}/file`、`/` |
+| 管理端点 | `/api/admin/*` 需 `SVP_ADMIN_TOKEN`（环境变量；未配置则一律 `403 admin_required`） |
+| 限流 | 令牌桶；超限返回 `429 rate_limited` + `Retry-After` + `X-RateLimit-Limit/Remaining/Reset` |
+
 ## 错误格式（统一）
 
 任何非 2xx 响应都是同一信封结构：
@@ -11,8 +31,18 @@ Base URL：`http://127.0.0.1:8080`
 { "error": { "code": "duration_too_long", "message": "视频时长 200.0s 超过短视频上限 180s" } }
 ```
 
+部分错误会在**顶层**附带机器可读字段（如 `duplicate_video` 的 `video_id`）。
+
 | 错误码 | 状态 | 含义 |
 |---|---|---|
+| `unauthenticated` | 401 | 缺少 `Authorization: Bearer` 头 |
+| `token_invalid` | 401 | 令牌不存在 / 已撤销 / 对应用户已删除 |
+| `token_expired` | 401 | 令牌超过 30 天 |
+| `identity_mismatch` | 403 | 请求声明身份与令牌身份不一致 |
+| `admin_required` | 403 | 管理端点缺少/错误的管理员凭据 |
+| `rate_limited` | 429 | 超过令牌桶速率（带 `Retry-After` 等响应头） |
+| `invalid_interest_tags` / `invalid_source` | 400 | 注册期 `interest_tags`（须恰好 3 个白名单标签）/ `source` 非法 |
+| `probe_unavailable` | 503 | 服务端 ffprobe 不可用 → **拒绝上传**（fail-closed） |
 | `invalid_handle` | 400 | handle 不符合 `[A-Za-z0-9_\-中文]{2,32}` |
 | `handle_taken` | 409 | handle 已存在 |
 | `user_not_found` | 404 | 用户不存在 |
@@ -30,7 +60,7 @@ Base URL：`http://127.0.0.1:8080`
 | `duration_too_long` / `duration_too_short` | 400 | 时长不在 1s~180s |
 | `resolution_too_low` | 400 | 高度 < 240px |
 | `unprobeable_media` | 400 | ffprobe 无法解析（非视频/损坏） |
-| `duplicate_video` | 409 | sha256 重复，报文含原 `video_id` |
+| `duplicate_video` | 409 | sha256 重复；报文含 `error.message` 与**顶层** `video_id`（客户端按幂等成功处理） |
 | `invalid_kind` | 400 | 互动类型非法 |
 | `self_follow` | 400 | 不能关注自己 |
 | `missing_user_id` | 400 | feed 缺少 `user_id` |
@@ -50,6 +80,8 @@ GET /api/health
 { "ok": true, "ts": 1758624000.123 }
 ```
 
+免鉴权、免限流（供探活）。
+
 ## 2. 用户
 
 ### 创建用户
@@ -57,18 +89,36 @@ GET /api/health
 POST /api/users
 Content-Type: application/json
 
-{ "handle": "foodie_lin", "display": "林小厨" }
+{ "handle": "foodie_lin", "display": "林小厨",
+  "interest_tags": ["美食", "旅行", "宠物"], "source": "seed_invite" }
 ```
 → `201`
 ```json
-{ "id": "b3c1...", "handle": "foodie_lin", "display": "林小厨", "created_at": 1758624000.1 }
+{ "id": "b3c1...", "handle": "foodie_lin", "display": "林小厨",
+  "created_at": 1758624000.1, "interest_tags": ["美食","旅行","宠物"],
+  "source": "seed_invite", "token": "<仅本次返回>", "expires_at": 1761216000.1,
+  "auth_level": "dev" }
 ```
+`interest_tags` 可选，若提供必须**恰好 3 个**且来自白名单；`source` 可选
+（`seed_invite` / `organic` / `ad` / `unknown`）。本接口按 IP 限流（5/小时）。
 
-### 查询用户
+### 开发级会话（换 token）
+```
+POST /api/sessions        { "handle": "foodie_lin" }
+```
+→ `200` `{ "token": "...", "user_id": "b3c1...", "expires_at": 1761216000.1, "auth_level": "dev" }`
+
+### 撤销当前 token
+```
+POST /api/sessions/revoke      （需 Bearer）
+```
+→ `200` `{ "ok": true, "revoked": true }`
+
+### 查询用户（需鉴权）
 ```
 GET /api/users/{user_id}
 ```
-→ `200` 同结构。
+→ `200` 同创建响应结构，但**不含** `token`（服务端从不存明文）。
 
 ## 3. 视频
 
